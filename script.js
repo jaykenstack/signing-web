@@ -1,12 +1,13 @@
 // Firebase Configuration
 // Replace with your Firebase config
 const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_AUTH_DOMAIN",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_STORAGE_BUCKET",
-    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-    appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyCyTWZbqQI_zGKbFMujOvy6kE4d4D-5KXw",
+  authDomain: "wamumu-attendance.firebaseapp.com",
+  databaseURL: "https://wamumu-attendance-default-rtdb.firebaseio.com",
+  projectId: "wamumu-attendance",
+  storageBucket: "wamumu-attendance.firebasestorage.app",
+  messagingSenderId: "809289925611",
+  appId: "1:809289925611:web:3e11d0ff414e33043ccfae"
 };
 
 // Initialize Firebase
