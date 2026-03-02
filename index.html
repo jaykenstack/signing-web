@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>WAMUMU PI ESP - Attendance System</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <!-- html2pdf for PDF export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>WAMUMU PI ESP</h1>
+            <div class="clerk-info">
+                <span class="label">Clerk of Works:</span>
+                <span class="value" id="clerkName">CHELSIE NJIRU</span>
+                <button class="edit-btn" onclick="editClerkName()"><i class="fas fa-pen"></i></button>
+            </div>
+            <div class="total-signatures">
+                Total Signatures: <span id="totalSignatures">0</span>
+            </div>
+        </div>
+
+        <!-- Progress Bars -->
+        <div class="progress-container">
+            <div class="progress-item">
+                <span class="progress-label">Week 1 Progress</span>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="week1Progress" style="width: 0%"></div>
+                </div>
+                <span class="progress-count" id="week1Count">0/25</span>
+            </div>
+            <div class="progress-item">
+                <span class="progress-label">Week 2 Progress</span>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="week2Progress" style="width: 0%"></div>
+                </div>
+                <span class="progress-count" id="week2Count">0/25</span>
+            </div>
+        </div>
+
+        <!-- Workers Management -->
+        <div class="workers-section">
+            <div class="section-header">
+                <h2>Workers List</h2>
+                <button class="add-worker-btn" onclick="showAddWorkerModal()">
+                    <i class="fas fa-plus"></i> Add Worker
+                </button>
+            </div>
+            
+            <!-- Workers Table (Desktop) -->
+            <div class="workers-table-container desktop-only">
+                <table class="workers-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Name</th>
+                            <th>National ID</th>
+                            <th>Phone Number</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="workersTableBody">
+                        <!-- Workers will be inserted here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Workers Cards (Mobile) -->
+            <div class="workers-cards mobile-only" id="workersCards">
+                <!-- Workers cards will be inserted here -->
+            </div>
+        </div>
+
+        <!-- Week Info -->
+        <div class="week-info">
+            <span class="week-badge">Week 1</span>
+            <span class="week-badge">Week 2</span>
+        </div>
+
+        <!-- Week 1 Attendance Section -->
+        <div class="attendance-section week1-section">
+            <h3>Week 1</h3>
+            
+            <!-- Desktop Attendance Table Week 1 -->
+            <div class="attendance-table-container desktop-only">
+                <table class="attendance-table">
+                    <thead>
+                        <tr>
+                            <th>Worker</th>
+                            <th>Monday</th>
+                            <th>Tuesday</th>
+                            <th>Wednesday</th>
+                            <th>Thursday</th>
+                            <th>Friday</th>
+                        </tr>
+                    </thead>
+                    <tbody id="attendanceTableBodyWeek1">
+                        <!-- Attendance rows for week 1 will be inserted here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Mobile Attendance Cards Week 1 -->
+            <div class="mobile-attendance mobile-only" id="mobileAttendanceWeek1">
+                <!-- Mobile attendance cards for week 1 will be inserted here -->
+            </div>
+        </div>
+
+        <!-- Week 2 Attendance Section -->
+        <div class="attendance-section week2-section">
+            <h3>Week 2</h3>
+            
+            <!-- Desktop Attendance Table Week 2 -->
+            <div class="attendance-table-container desktop-only">
+                <table class="attendance-table">
+                    <thead>
+                        <tr>
+                            <th>Worker</th>
+                            <th>Monday</th>
+                            <th>Tuesday</th>
+                            <th>Wednesday</th>
+                            <th>Thursday</th>
+                            <th>Friday</th>
+                        </tr>
+                    </thead>
+                    <tbody id="attendanceTableBodyWeek2">
+                        <!-- Attendance rows for week 2 will be inserted here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Mobile Attendance Cards Week 2 -->
+            <div class="mobile-attendance mobile-only" id="mobileAttendanceWeek2">
+                <!-- Mobile attendance cards for week 2 will be inserted here -->
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <div class="instructions">
+            <h4>How to Use</h4>
+            <ul>
+                <li>Click the "Sign" button next to your name for each day you worked.</li>
+                <li>Use your mouse or finger to draw your signature in the signature pad.</li>
+                <li>Click "Submit Signature" to save your attendance.</li>
+                <li>You can re-sign if needed by clicking the signature or the pen icon.</li>
+                <li>Click the delete button on a signed entry to remove the signature.</li>
+                <li>Use the Export button to download all signatures as a PDF file.</li>
+            </ul>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p>WAMUMU PI ESP - Clerk of Works Attendance System</p>
+            <p>© 2026 - All signatures are recorded</p>
+            <button class="export-btn" onclick="exportToPDF()">
+                <i class="fas fa-file-pdf"></i> Export to PDF
+            </button>
+        </div>
+    </div>
+
+    <!-- Signature Modal -->
+    <div id="signatureModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Draw Your Signature</h3>
+                <button class="close-btn" onclick="closeSignatureModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="signatureInfo"></p>
+                <canvas id="signatureCanvas" class="signature-pad"></canvas>
+                <div class="signature-controls">
+                    <button class="clear-btn" onclick="clearSignature()">Clear</button>
+                    <button class="submit-btn" onclick="submitSignature()">Submit Signature</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Worker Modal -->
+    <div id="addWorkerModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New Worker</h3>
+                <button class="close-btn" onclick="closeAddWorkerModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="addWorkerForm" onsubmit="addWorker(event)">
+                    <div class="form-group">
+                        <label for="workerName">Full Name</label>
+                        <input type="text" id="workerName" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="workerNationalId">National ID</label>
+                        <input type="text" id="workerNationalId" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="workerPhone">Phone Number</label>
+                        <input type="tel" id="workerPhone" required>
+                    </div>
+                    <button type="submit" class="submit-btn">Add Worker</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Signature Confirmation Modal -->
+    <div id="deleteSignatureModal" class="modal">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3>Delete Signature</h3>
+                <button class="close-btn" onclick="closeDeleteSignatureModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="deleteSignatureInfo">Are you sure you want to delete this signature?</p>
+                <div style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
+                    <button class="clear-btn" onclick="closeDeleteSignatureModal()">Cancel</button>
+                    <button class="submit-btn" onclick="confirmDeleteSignature()">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
