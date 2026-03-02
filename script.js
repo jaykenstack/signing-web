@@ -45,11 +45,28 @@ const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 // Initialize the app
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM loaded, initializing app...');
     initializeCanvas();
     loadData();
     setupRealtimeListeners();
     checkMobileDevice();
     setupOfflineSupport();
+    loadClerkName();
+    
+    // Add click event listeners to all sign buttons dynamically
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('.sign-btn')) {
+            const btn = e.target.closest('.sign-btn');
+            if (!btn.classList.contains('signed')) {
+                const workerId = btn.getAttribute('data-worker-id');
+                const day = btn.getAttribute('data-day');
+                const week = btn.getAttribute('data-week');
+                if (workerId && day && week) {
+                    openSignatureModal(workerId, day, week);
+                }
+            }
+        }
+    });
 });
 
 // Check if device is mobile
@@ -79,6 +96,7 @@ function setupOfflineSupport() {
 function initializeCanvas() {
     canvas = document.getElementById('signatureCanvas');
     if (canvas) {
+        console.log('Canvas initialized');
         ctx = canvas.getContext('2d');
         ctx.strokeStyle = '#000';
         ctx.lineWidth = 2;
@@ -102,6 +120,8 @@ function initializeCanvas() {
         
         // Prevent scrolling when drawing on mobile
         canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+    } else {
+        console.error('Canvas element not found');
     }
 }
 
@@ -184,22 +204,21 @@ function draw(e) {
     e.preventDefault();
     
     const pos = getCanvasCoordinates(e);
-    const prevPos = {
-        x: pos.x - (pos.x - (drawingHistory[drawingHistory.length - 1]?.x || pos.x)),
-        y: pos.y - (pos.y - (drawingHistory[drawingHistory.length - 1]?.y || pos.y))
-    };
     
     ctx.lineTo(pos.x, pos.y);
     ctx.stroke();
     
     // Store drawing point
-    drawingHistory.push({
-        type: 'draw',
-        x1: prevPos.x,
-        y1: prevPos.y,
-        x2: pos.x,
-        y2: pos.y
-    });
+    if (drawingHistory.length > 0) {
+        const lastPoint = drawingHistory[drawingHistory.length - 1];
+        drawingHistory.push({
+            type: 'draw',
+            x1: lastPoint.type === 'draw' ? lastPoint.x2 : lastPoint.x,
+            y1: lastPoint.type === 'draw' ? lastPoint.y2 : lastPoint.y,
+            x2: pos.x,
+            y2: pos.y
+        });
+    }
     
     // Clear redo stack on new drawing
     redoStack = [];
@@ -242,6 +261,8 @@ function clearSignature() {
 
 // Load data from Firestore with real-time listeners
 function loadData() {
+    console.log('Loading data from Firebase...');
+    
     // Load workers with real-time listener
     db.collection('workers').orderBy('name').onSnapshot((snapshot) => {
         workers = [];
@@ -251,17 +272,17 @@ function loadData() {
                 ...doc.data()
             });
         });
+        console.log('Workers loaded:', workers.length);
         renderWorkers();
         renderAttendance();
         updateProgress();
-        triggerRealtimeUpdate('workers');
     }, (error) => {
         console.error('Error loading workers:', error);
         showNotification('Error loading workers. Please refresh.', 'error');
     });
 
     // Load signatures with real-time listener
-    db.collection('signatures').orderBy('timestamp', 'desc').onSnapshot((snapshot) => {
+    db.collection('signatures').onSnapshot((snapshot) => {
         snapshot.docChanges().forEach((change) => {
             if (change.type === 'added') {
                 showNotification('New signature added!', 'success');
@@ -279,10 +300,10 @@ function loadData() {
                 ...doc.data()
             });
         });
+        console.log('Signatures loaded:', signatures.length);
         updateTotalSignatures();
         renderAttendance();
         updateProgress();
-        triggerRealtimeUpdate('signatures');
     }, (error) => {
         console.error('Error loading signatures:', error);
         showNotification('Error loading signatures. Please refresh.', 'error');
@@ -303,36 +324,6 @@ function setupRealtimeListeners() {
             }
         });
     });
-
-    // Listen for changes in signatures collection
-    db.collection('signatures').onSnapshot((snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-                // Play subtle notification sound if supported
-                playNotificationSound();
-            }
-        });
-    });
-}
-
-// Trigger realtime update event
-function triggerRealtimeUpdate(type) {
-    const event = new CustomEvent('realtimeUpdate', {
-        detail: { type, timestamp: Date.now() }
-    });
-    window.dispatchEvent(event);
-}
-
-// Play notification sound (optional)
-function playNotificationSound() {
-    // Only play if user has interacted with the page
-    if (localStorage.getItem('soundEnabled') === 'true') {
-        try {
-            const audio = new Audio('data:audio/wav;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////8AAAA5TEFNRTMuMTAwAc0AAAAAAAAAABSAJAQgQgAAgAAABIAAAAAAAAAA');
-            audio.volume = 0.1;
-            audio.play().catch(() => {});
-        } catch (e) {}
-    }
 }
 
 // Show notification with different types
@@ -371,6 +362,17 @@ function showNotification(message, type = 'success') {
             notification.remove();
         }, 300);
     }, 3000);
+}
+
+// Escape HTML to prevent XSS
+function escapeHtml(unsafe) {
+    if (!unsafe) return '';
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
 }
 
 // Render workers list with mobile optimization
@@ -423,16 +425,6 @@ function renderWorkers() {
         `;
         cardsContainer.appendChild(card);
     });
-}
-
-// Escape HTML to prevent XSS
-function escapeHtml(unsafe) {
-    return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
 }
 
 // Render attendance for both weeks
@@ -521,7 +513,7 @@ function renderAttendanceCell(workerId, day, week) {
         s.workerId === workerId && s.day === day && s.week === week
     );
     
-    if (signature) {
+    if (signature && signature.data) {
         return `
             <td class="signature-cell">
                 <div class="signature-actions">
@@ -540,7 +532,7 @@ function renderAttendanceCell(workerId, day, week) {
     } else {
         return `
             <td>
-                <button class="sign-btn" onclick="openSignatureModal('${workerId}', '${day}', '${week}')">
+                <button class="sign-btn" data-worker-id="${workerId}" data-day="${day}" data-week="${week}">
                     <i class="fas fa-pen"></i> Sign
                 </button>
             </td>
@@ -554,7 +546,7 @@ function renderMobileAttendance(workerId, day, week) {
         s.workerId === workerId && s.day === day && s.week === week
     );
     
-    if (signature) {
+    if (signature && signature.data) {
         return `
             <div class="mobile-day-row">
                 <div class="mobile-day-info">
@@ -575,7 +567,7 @@ function renderMobileAttendance(workerId, day, week) {
         return `
             <div class="mobile-day-row">
                 <span class="mobile-day-name">${day}</span>
-                <button class="sign-btn" onclick="openSignatureModal('${workerId}', '${day}', '${week}')">
+                <button class="sign-btn" data-worker-id="${workerId}" data-day="${day}" data-week="${week}">
                     <i class="fas fa-pen"></i> Sign
                 </button>
             </div>
@@ -585,13 +577,23 @@ function renderMobileAttendance(workerId, day, week) {
 
 // Open signature modal with mobile optimization
 function openSignatureModal(workerId, day, week) {
+    console.log('Opening signature modal for:', { workerId, day, week });
+    
     const worker = workers.find(w => w.id === workerId);
-    if (!worker) return;
+    if (!worker) {
+        console.error('Worker not found:', workerId);
+        return;
+    }
     
     currentSigning = { workerId, day, week };
     
     const modal = document.getElementById('signatureModal');
     const info = document.getElementById('signatureInfo');
+    
+    if (!modal || !info) {
+        console.error('Modal elements not found');
+        return;
+    }
     
     info.textContent = `Signing for ${worker.name} on ${day} (${week === 'week1' ? 'Week 1' : 'Week 2'})`;
     
@@ -602,19 +604,26 @@ function openSignatureModal(workerId, day, week) {
     
     // Focus on canvas for mobile
     setTimeout(() => {
-        canvas.focus();
+        if (canvas) {
+            canvas.focus();
+        }
     }, 300);
 }
 
 // Close signature modal
 function closeSignatureModal() {
-    document.getElementById('signatureModal').style.display = 'none';
+    const modal = document.getElementById('signatureModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
     currentSigning = { workerId: null, day: null, week: null };
     clearSignature();
 }
 
 // Submit signature with real-time sync
 async function submitSignature() {
+    console.log('Submitting signature...', currentSigning);
+    
     if (!currentSigning.workerId || !currentSigning.day) {
         alert('No signing session active');
         return;
@@ -669,6 +678,8 @@ async function submitSignature() {
 
 // Open delete signature modal
 function openDeleteSignatureModal(signatureId, workerId, day, week) {
+    console.log('Opening delete modal for:', { signatureId, workerId, day, week });
+    
     const worker = workers.find(w => w.id === workerId);
     if (!worker) return;
     
@@ -677,6 +688,8 @@ function openDeleteSignatureModal(signatureId, workerId, day, week) {
     const modal = document.getElementById('deleteSignatureModal');
     const info = document.getElementById('deleteSignatureInfo');
     
+    if (!modal || !info) return;
+    
     info.textContent = `Delete signature for ${worker.name} on ${day} (${week === 'week1' ? 'Week 1' : 'Week 2'})?`;
     
     modal.style.display = 'flex';
@@ -684,7 +697,10 @@ function openDeleteSignatureModal(signatureId, workerId, day, week) {
 
 // Close delete signature modal
 function closeDeleteSignatureModal() {
-    document.getElementById('deleteSignatureModal').style.display = 'none';
+    const modal = document.getElementById('deleteSignatureModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
     currentDeleteSignature = null;
 }
 
@@ -704,6 +720,8 @@ async function confirmDeleteSignature() {
 
 // Show signature
 function showSignature(workerId, day, week) {
+    console.log('Showing signature for:', { workerId, day, week });
+    
     const signature = signatures.find(s => 
         s.workerId === workerId && s.day === day && s.week === week
     );
@@ -740,12 +758,18 @@ function showSignature(workerId, day, week) {
 
 // Show add worker modal
 function showAddWorkerModal() {
-    document.getElementById('addWorkerModal').style.display = 'flex';
+    const modal = document.getElementById('addWorkerModal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
 }
 
 // Close add worker modal
 function closeAddWorkerModal() {
-    document.getElementById('addWorkerModal').style.display = 'none';
+    const modal = document.getElementById('addWorkerModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
     document.getElementById('addWorkerForm').reset();
 }
 
@@ -1195,16 +1219,6 @@ async function exportToPDF() {
     showNotification('PDF report generated successfully!', 'success');
 }
 
-// Toggle sound notifications
-function toggleSound() {
-    const current = localStorage.getItem('soundEnabled') === 'true';
-    localStorage.setItem('soundEnabled', (!current).toString());
-    showNotification(`Sound ${!current ? 'enabled' : 'disabled'}`, 'info');
-}
-
-// Load clerk name on startup
-loadClerkName();
-
 // Window resize handler with debounce
 let resizeTimeout;
 window.addEventListener('resize', () => {
@@ -1214,82 +1228,18 @@ window.addEventListener('resize', () => {
     }, 250);
 });
 
-// Add CSS animations dynamically
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn {
-        from {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-        to {
-            transform: translateX(0);
-            opacity: 1;
-        }
-    }
-    
-    @keyframes slideOut {
-        from {
-            transform: translateX(0);
-            opacity: 1;
-        }
-        to {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-    }
-    
-    .modal {
-        animation: fadeIn 0.3s ease;
-    }
-    
-    @keyframes fadeIn {
-        from {
-            opacity: 0;
-        }
-        to {
-            opacity: 1;
-        }
-    }
-    
-    /* Mobile optimizations */
-    @media (max-width: 768px) {
-        .signature-preview {
-            max-width: 50px;
-            max-height: 25px;
-        }
-        
-        .delete-signature-btn {
-            width: 30px;
-            height: 30px;
-        }
-        
-        .modal-content {
-            width: 95%;
-            margin: 10px;
-        }
-        
-        .signature-pad {
-            height: 150px;
-        }
-        
-        .worker-name-cell {
-            font-size: 12px;
-        }
-    }
-    
-    /* Touch optimization */
-    .mobile-device .sign-btn,
-    .mobile-device .delete-btn,
-    .mobile-device .delete-signature-btn {
-        min-height: 44px;
-        min-width: 44px;
-    }
-    
-    .mobile-device input,
-    .mobile-device select,
-    .mobile-device textarea {
-        font-size: 16px !important;
-    }
-`;
-document.head.appendChild(style);
+// Make functions globally available
+window.openSignatureModal = openSignatureModal;
+window.closeSignatureModal = closeSignatureModal;
+window.submitSignature = submitSignature;
+window.clearSignature = clearSignature;
+window.openDeleteSignatureModal = openDeleteSignatureModal;
+window.closeDeleteSignatureModal = closeDeleteSignatureModal;
+window.confirmDeleteSignature = confirmDeleteSignature;
+window.showSignature = showSignature;
+window.showAddWorkerModal = showAddWorkerModal;
+window.closeAddWorkerModal = closeAddWorkerModal;
+window.addWorker = addWorker;
+window.deleteWorker = deleteWorker;
+window.editClerkName = editClerkName;
+window.exportToPDF = exportToPDF;
