@@ -14,6 +14,16 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
+// Enable persistence for offline support and better real-time sync
+db.enablePersistence({ synchronizeTabs: true })
+    .catch((err) => {
+        if (err.code == 'failed-precondition') {
+            console.log('Persistence failed to enable');
+        } else if (err.code == 'unimplemented') {
+            console.log('Persistence not available');
+        }
+    });
+
 // Global variables
 let workers = [];
 let signatures = [];
@@ -27,35 +37,45 @@ let currentDeleteSignature = null;
 let canvas = null;
 let ctx = null;
 let isDrawing = false;
+let drawingHistory = [];
+let redoStack = [];
 
 // Days of the week
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-
-// Week dates
-const week1Dates = {
-    'Monday': '02/02/26',
-    'Tuesday': '03/02/26',
-    'Wednesday': '04/02/26',
-    'Thursday': '05/02/26',
-    'Friday': '06/02/26'
-};
-
-const week2Dates = {
-    'Monday': '09/02/26',
-    'Tuesday': '10/02/26',
-    'Wednesday': '11/02/26',
-    'Thursday': '12/02/26',
-    'Friday': '13/02/26'
-};
 
 // Initialize the app
 document.addEventListener('DOMContentLoaded', () => {
     initializeCanvas();
     loadData();
     setupRealtimeListeners();
+    checkMobileDevice();
+    setupOfflineSupport();
 });
 
-// Initialize signature canvas
+// Check if device is mobile
+function checkMobileDevice() {
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+        document.body.classList.add('mobile-device');
+        // Optimize canvas for touch
+        if (canvas) {
+            canvas.style.touchAction = 'none';
+        }
+    }
+}
+
+// Setup offline support
+function setupOfflineSupport() {
+    window.addEventListener('online', () => {
+        showNotification('Back online - Syncing data...');
+    });
+    
+    window.addEventListener('offline', () => {
+        showNotification('You are offline - Changes will sync when connection resumes', 'warning');
+    });
+}
+
+// Initialize signature canvas with mobile optimization
 function initializeCanvas() {
     canvas = document.getElementById('signatureCanvas');
     if (canvas) {
@@ -65,43 +85,98 @@ function initializeCanvas() {
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         
-        // Set canvas size
+        // Set canvas size based on device
         resizeCanvas();
         
-        // Event listeners for drawing
+        // Event listeners for drawing (mouse)
         canvas.addEventListener('mousedown', startDrawing);
         canvas.addEventListener('mousemove', draw);
         canvas.addEventListener('mouseup', stopDrawing);
         canvas.addEventListener('mouseleave', stopDrawing);
         
         // Touch events for mobile
-        canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            startDrawing(e);
-        });
-        canvas.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            draw(e);
-        });
-        canvas.addEventListener('touchend', stopDrawing);
+        canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+        canvas.addEventListener('touchend', handleTouchEnd);
+        canvas.addEventListener('touchcancel', handleTouchEnd);
+        
+        // Prevent scrolling when drawing on mobile
+        canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
     }
 }
 
-// Resize canvas
+// Handle touch start
+function handleTouchStart(e) {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const mouseEvent = new MouseEvent('mousedown', {
+        clientX: touch.clientX,
+        clientY: touch.clientY
+    });
+    canvas.dispatchEvent(mouseEvent);
+}
+
+// Handle touch move
+function handleTouchMove(e) {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const mouseEvent = new MouseEvent('mousemove', {
+        clientX: touch.clientX,
+        clientY: touch.clientY
+    });
+    canvas.dispatchEvent(mouseEvent);
+}
+
+// Handle touch end
+function handleTouchEnd(e) {
+    e.preventDefault();
+    const mouseEvent = new MouseEvent('mouseup', {});
+    canvas.dispatchEvent(mouseEvent);
+}
+
+// Resize canvas responsively
 function resizeCanvas() {
     if (canvas) {
         const container = canvas.parentElement;
-        canvas.width = container.clientWidth - 30;
-        canvas.height = 200;
+        const containerWidth = container.clientWidth - 30;
+        const containerHeight = window.innerHeight > 600 ? 200 : 150;
+        
+        canvas.width = Math.min(containerWidth, 500);
+        canvas.height = containerHeight;
+        
+        // Redraw signature if exists
+        if (drawingHistory.length > 0) {
+            redrawCanvas();
+        }
     }
 }
 
-// Drawing functions
+// Redraw canvas from history
+function redrawCanvas() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawingHistory.forEach(point => {
+        if (point.type === 'draw') {
+            ctx.beginPath();
+            ctx.moveTo(point.x1, point.y1);
+            ctx.lineTo(point.x2, point.y2);
+            ctx.stroke();
+        }
+    });
+}
+
+// Drawing functions with history
 function startDrawing(e) {
     isDrawing = true;
     const pos = getCanvasCoordinates(e);
     ctx.beginPath();
     ctx.moveTo(pos.x, pos.y);
+    
+    // Start new drawing path in history
+    drawingHistory.push({
+        type: 'start',
+        x: pos.x,
+        y: pos.y
+    });
 }
 
 function draw(e) {
@@ -109,8 +184,25 @@ function draw(e) {
     e.preventDefault();
     
     const pos = getCanvasCoordinates(e);
+    const prevPos = {
+        x: pos.x - (pos.x - (drawingHistory[drawingHistory.length - 1]?.x || pos.x)),
+        y: pos.y - (pos.y - (drawingHistory[drawingHistory.length - 1]?.y || pos.y))
+    };
+    
     ctx.lineTo(pos.x, pos.y);
     ctx.stroke();
+    
+    // Store drawing point
+    drawingHistory.push({
+        type: 'draw',
+        x1: prevPos.x,
+        y1: prevPos.y,
+        x2: pos.x,
+        y2: pos.y
+    });
+    
+    // Clear redo stack on new drawing
+    redoStack = [];
 }
 
 function stopDrawing() {
@@ -143,12 +235,14 @@ function getCanvasCoordinates(e) {
 function clearSignature() {
     if (ctx) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawingHistory = [];
+        redoStack = [];
     }
 }
 
-// Load data from Firestore
+// Load data from Firestore with real-time listeners
 function loadData() {
-    // Load workers
+    // Load workers with real-time listener
     db.collection('workers').orderBy('name').onSnapshot((snapshot) => {
         workers = [];
         snapshot.forEach((doc) => {
@@ -159,10 +253,25 @@ function loadData() {
         });
         renderWorkers();
         renderAttendance();
+        updateProgress();
+        triggerRealtimeUpdate('workers');
+    }, (error) => {
+        console.error('Error loading workers:', error);
+        showNotification('Error loading workers. Please refresh.', 'error');
     });
 
-    // Load signatures
-    db.collection('signatures').onSnapshot((snapshot) => {
+    // Load signatures with real-time listener
+    db.collection('signatures').orderBy('timestamp', 'desc').onSnapshot((snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+            if (change.type === 'added') {
+                showNotification('New signature added!', 'success');
+            } else if (change.type === 'modified') {
+                showNotification('Signature updated!', 'info');
+            } else if (change.type === 'removed') {
+                showNotification('Signature deleted!', 'warning');
+            }
+        });
+        
         signatures = [];
         snapshot.forEach((doc) => {
             signatures.push({
@@ -173,32 +282,68 @@ function loadData() {
         updateTotalSignatures();
         renderAttendance();
         updateProgress();
+        triggerRealtimeUpdate('signatures');
+    }, (error) => {
+        console.error('Error loading signatures:', error);
+        showNotification('Error loading signatures. Please refresh.', 'error');
     });
 }
 
-// Setup realtime listeners
+// Setup realtime listeners for cross-device sync
 function setupRealtimeListeners() {
+    // Listen for changes in workers collection
     db.collection('workers').onSnapshot((snapshot) => {
         snapshot.docChanges().forEach((change) => {
-            if (change.type === 'added' || change.type === 'modified' || change.type === 'removed') {
-                console.log('Worker data changed:', change.type);
+            if (change.type === 'added') {
+                console.log('Worker added on another device');
+            } else if (change.type === 'modified') {
+                console.log('Worker modified on another device');
+            } else if (change.type === 'removed') {
+                console.log('Worker removed on another device');
             }
         });
     });
 
+    // Listen for changes in signatures collection
     db.collection('signatures').onSnapshot((snapshot) => {
         snapshot.docChanges().forEach((change) => {
             if (change.type === 'added') {
-                showNotification('New signature added!');
-            } else if (change.type === 'removed') {
-                showNotification('Signature deleted!');
+                // Play subtle notification sound if supported
+                playNotificationSound();
             }
         });
     });
 }
 
-// Show notification
-function showNotification(message) {
+// Trigger realtime update event
+function triggerRealtimeUpdate(type) {
+    const event = new CustomEvent('realtimeUpdate', {
+        detail: { type, timestamp: Date.now() }
+    });
+    window.dispatchEvent(event);
+}
+
+// Play notification sound (optional)
+function playNotificationSound() {
+    // Only play if user has interacted with the page
+    if (localStorage.getItem('soundEnabled') === 'true') {
+        try {
+            const audio = new Audio('data:audio/wav;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////8AAAA5TEFNRTMuMTAwAc0AAAAAAAAAABSAJAQgQgAAgAAABIAAAAAAAAAA');
+            audio.volume = 0.1;
+            audio.play().catch(() => {});
+        } catch (e) {}
+    }
+}
+
+// Show notification with different types
+function showNotification(message, type = 'success') {
+    const colors = {
+        success: 'linear-gradient(135deg, #4CAF50, #45a049)',
+        error: 'linear-gradient(135deg, #f44336, #d32f2f)',
+        warning: 'linear-gradient(135deg, #ff9800, #f57c00)',
+        info: 'linear-gradient(135deg, #2196F3, #1976D2)'
+    };
+    
     const notification = document.createElement('div');
     notification.className = 'notification';
     notification.textContent = message;
@@ -206,23 +351,29 @@ function showNotification(message) {
         position: fixed;
         top: 20px;
         right: 20px;
-        background: linear-gradient(135deg, #4CAF50, #45a049);
+        background: ${colors[type] || colors.success};
         color: white;
         padding: 15px 25px;
         border-radius: 10px;
         box-shadow: 0 5px 15px rgba(0,0,0,0.3);
         z-index: 2000;
         animation: slideIn 0.3s ease;
+        max-width: 90%;
+        word-wrap: break-word;
+        font-size: 14px;
     `;
     
     document.body.appendChild(notification);
     
     setTimeout(() => {
-        notification.remove();
+        notification.style.animation = 'slideOut 0.3s ease';
+        setTimeout(() => {
+            notification.remove();
+        }, 300);
     }, 3000);
 }
 
-// Render workers list
+// Render workers list with mobile optimization
 function renderWorkers() {
     const tableBody = document.getElementById('workersTableBody');
     const cardsContainer = document.getElementById('workersCards');
@@ -233,16 +384,16 @@ function renderWorkers() {
     cardsContainer.innerHTML = '';
     
     workers.forEach((worker, index) => {
-        // Table row
+        // Table row for desktop
         const row = document.createElement('tr');
         row.innerHTML = `
             <td>${index + 1}</td>
-            <td>${worker.name}</td>
-            <td>${worker.nationalId}</td>
-            <td>${worker.phone}</td>
+            <td>${escapeHtml(worker.name)}</td>
+            <td>${escapeHtml(worker.nationalId)}</td>
+            <td>${escapeHtml(worker.phone)}</td>
             <td>
                 <div class="action-btns">
-                    <button class="delete-btn" onclick="deleteWorker('${worker.id}')">
+                    <button class="delete-btn" onclick="deleteWorker('${worker.id}')" aria-label="Delete worker">
                         <i class="fas fa-trash"></i>
                     </button>
                 </div>
@@ -256,22 +407,32 @@ function renderWorkers() {
         card.innerHTML = `
             <div class="worker-card-header">
                 <span class="worker-number">${index + 1}</span>
-                <button class="delete-btn" onclick="deleteWorker('${worker.id}')">
+                <button class="delete-btn" onclick="deleteWorker('${worker.id}')" aria-label="Delete worker">
                     <i class="fas fa-trash"></i>
                 </button>
             </div>
             <div class="worker-detail">
-                <strong>Name:</strong> ${worker.name}
+                <strong>Name:</strong> <span>${escapeHtml(worker.name)}</span>
             </div>
             <div class="worker-detail">
-                <strong>National ID:</strong> ${worker.nationalId}
+                <strong>National ID:</strong> <span>${escapeHtml(worker.nationalId)}</span>
             </div>
             <div class="worker-detail">
-                <strong>Phone:</strong> ${worker.phone}
+                <strong>Phone:</strong> <span>${escapeHtml(worker.phone)}</span>
             </div>
         `;
         cardsContainer.appendChild(card);
     });
+}
+
+// Escape HTML to prevent XSS
+function escapeHtml(unsafe) {
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
 }
 
 // Render attendance for both weeks
@@ -293,7 +454,7 @@ function renderWeek1Attendance() {
     workers.forEach((worker) => {
         // Desktop table row
         const row = document.createElement('tr');
-        let rowHtml = `<td><strong>${worker.name}</strong></td>`;
+        let rowHtml = `<td class="worker-name-cell"><strong>${escapeHtml(worker.name)}</strong></td>`;
         
         daysOfWeek.forEach(day => {
             rowHtml += renderAttendanceCell(worker.id, day, 'week1');
@@ -305,7 +466,7 @@ function renderWeek1Attendance() {
         // Mobile attendance card
         const card = document.createElement('div');
         card.className = 'attendance-card';
-        let cardHtml = `<div class="worker-name">${worker.name}</div><div class="days-grid">`;
+        let cardHtml = `<div class="worker-name">${escapeHtml(worker.name)}</div><div class="days-grid">`;
         
         daysOfWeek.forEach(day => {
             cardHtml += renderMobileAttendance(worker.id, day, 'week1');
@@ -330,7 +491,7 @@ function renderWeek2Attendance() {
     workers.forEach((worker) => {
         // Desktop table row
         const row = document.createElement('tr');
-        let rowHtml = `<td><strong>${worker.name}</strong></td>`;
+        let rowHtml = `<td class="worker-name-cell"><strong>${escapeHtml(worker.name)}</strong></td>`;
         
         daysOfWeek.forEach(day => {
             rowHtml += renderAttendanceCell(worker.id, day, 'week2');
@@ -342,7 +503,7 @@ function renderWeek2Attendance() {
         // Mobile attendance card
         const card = document.createElement('div');
         card.className = 'attendance-card';
-        let cardHtml = `<div class="worker-name">${worker.name}</div><div class="days-grid">`;
+        let cardHtml = `<div class="worker-name">${escapeHtml(worker.name)}</div><div class="days-grid">`;
         
         daysOfWeek.forEach(day => {
             cardHtml += renderMobileAttendance(worker.id, day, 'week2');
@@ -354,7 +515,7 @@ function renderWeek2Attendance() {
     });
 }
 
-// Render attendance cell
+// Render attendance cell for desktop
 function renderAttendanceCell(workerId, day, week) {
     const signature = signatures.find(s => 
         s.workerId === workerId && s.day === day && s.week === week
@@ -362,15 +523,14 @@ function renderAttendanceCell(workerId, day, week) {
     
     if (signature) {
         return `
-            <td>
+            <td class="signature-cell">
                 <div class="signature-actions">
-                    <button class="sign-btn signed" onclick="showSignature('${workerId}', '${day}', '${week}')">
-                        <i class="fas fa-check"></i>
-                    </button>
                     <div class="signature-preview-container">
                         <img src="${signature.data}" class="signature-preview" alt="Signature" 
-                             onclick="showSignature('${workerId}', '${day}', '${week}')">
-                        <button class="delete-signature-btn" onclick="openDeleteSignatureModal('${signature.id}', '${workerId}', '${day}', '${week}')">
+                             onclick="showSignature('${workerId}', '${day}', '${week}')"
+                             loading="lazy">
+                        <button class="delete-signature-btn" onclick="openDeleteSignatureModal('${signature.id}', '${workerId}', '${day}', '${week}')" 
+                                aria-label="Delete signature">
                             <i class="fas fa-trash"></i>
                         </button>
                     </div>
@@ -400,13 +560,12 @@ function renderMobileAttendance(workerId, day, week) {
                 <div class="mobile-day-info">
                     <span class="mobile-day-name">${day}</span>
                     <img src="${signature.data}" class="signature-preview" alt="Signature" 
-                         onclick="showSignature('${workerId}', '${day}', '${week}')">
+                         onclick="showSignature('${workerId}', '${day}', '${week}')"
+                         loading="lazy">
                 </div>
                 <div class="mobile-signature-actions">
-                    <button class="sign-btn signed" onclick="showSignature('${workerId}', '${day}', '${week}')">
-                        <i class="fas fa-check"></i>
-                    </button>
-                    <button class="delete-signature-btn" onclick="openDeleteSignatureModal('${signature.id}', '${workerId}', '${day}', '${week}')">
+                    <button class="delete-signature-btn" onclick="openDeleteSignatureModal('${signature.id}', '${workerId}', '${day}', '${week}')" 
+                            aria-label="Delete signature">
                         <i class="fas fa-trash"></i>
                     </button>
                 </div>
@@ -424,7 +583,7 @@ function renderMobileAttendance(workerId, day, week) {
     }
 }
 
-// Open signature modal
+// Open signature modal with mobile optimization
 function openSignatureModal(workerId, day, week) {
     const worker = workers.find(w => w.id === workerId);
     if (!worker) return;
@@ -440,23 +599,37 @@ function openSignatureModal(workerId, day, week) {
     clearSignature();
     
     modal.style.display = 'flex';
+    
+    // Focus on canvas for mobile
+    setTimeout(() => {
+        canvas.focus();
+    }, 300);
 }
 
 // Close signature modal
 function closeSignatureModal() {
     document.getElementById('signatureModal').style.display = 'none';
     currentSigning = { workerId: null, day: null, week: null };
+    clearSignature();
 }
 
-// Submit signature
+// Submit signature with real-time sync
 async function submitSignature() {
     if (!currentSigning.workerId || !currentSigning.day) {
         alert('No signing session active');
         return;
     }
     
+    // Check if canvas is empty
+    const isEmpty = drawingHistory.length === 0;
+    if (isEmpty) {
+        if (!confirm('No signature drawn. Submit empty?')) {
+            return;
+        }
+    }
+    
     // Get signature data
-    const signatureData = canvas.toDataURL('image/png');
+    const signatureData = isEmpty ? '' : canvas.toDataURL('image/png');
     
     // Create signature object
     const signature = {
@@ -464,11 +637,13 @@ async function submitSignature() {
         day: currentSigning.day,
         week: currentSigning.week,
         data: signatureData,
-        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        deviceInfo: navigator.userAgent,
+        lastModified: new Date().toISOString()
     };
     
     try {
-        // Check if signature already exists for this worker, day, and week
+        // Check if signature already exists
         const existingSignature = signatures.find(s => 
             s.workerId === currentSigning.workerId && 
             s.day === currentSigning.day && 
@@ -477,10 +652,7 @@ async function submitSignature() {
         
         if (existingSignature) {
             // Update existing signature
-            await db.collection('signatures').doc(existingSignature.id).update({
-                data: signatureData,
-                timestamp: firebase.firestore.FieldValue.serverTimestamp()
-            });
+            await db.collection('signatures').doc(existingSignature.id).update(signature);
             showNotification('Signature updated successfully!');
         } else {
             // Add new signature
@@ -491,7 +663,7 @@ async function submitSignature() {
         closeSignatureModal();
     } catch (error) {
         console.error('Error saving signature:', error);
-        alert('Error saving signature. Please try again.');
+        showNotification('Error saving signature. Please try again.', 'error');
     }
 }
 
@@ -523,10 +695,10 @@ async function confirmDeleteSignature() {
     try {
         await db.collection('signatures').doc(currentDeleteSignature.signatureId).delete();
         closeDeleteSignatureModal();
-        showNotification('Signature deleted successfully!');
+        showNotification('Signature deleted successfully!', 'warning');
     } catch (error) {
         console.error('Error deleting signature:', error);
-        alert('Error deleting signature. Please try again.');
+        showNotification('Error deleting signature. Please try again.', 'error');
     }
 }
 
@@ -536,7 +708,7 @@ function showSignature(workerId, day, week) {
         s.workerId === workerId && s.day === day && s.week === week
     );
     
-    if (signature) {
+    if (signature && signature.data) {
         const worker = workers.find(w => w.id === workerId);
         const weekName = week === 'week1' ? 'Week 1' : 'Week 2';
         
@@ -550,13 +722,14 @@ function showSignature(workerId, day, week) {
                     <button class="close-btn" onclick="this.closest('.modal').remove()">&times;</button>
                 </div>
                 <div class="modal-body" style="text-align: center;">
-                    <p><strong>${worker ? worker.name : 'Unknown'}</strong></p>
+                    <p><strong>${worker ? escapeHtml(worker.name) : 'Unknown'}</strong></p>
                     <p>${day}</p>
-                    <img src="${signature.data}" style="max-width: 100%; border: 1px solid #ddd; border-radius: 10px; margin-top: 15px;">
-                    <div style="margin-top: 20px;">
+                    <img src="${signature.data}" style="max-width: 100%; max-height: 200px; border: 1px solid #ddd; border-radius: 10px; margin: 15px 0;" alt="Signature">
+                    <div style="display: flex; gap: 10px; justify-content: center;">
                         <button class="delete-btn" onclick="openDeleteSignatureModal('${signature.id}', '${workerId}', '${day}', '${week}'); this.closest('.modal').remove();">
-                            <i class="fas fa-trash"></i> Delete Signature
+                            <i class="fas fa-trash"></i> Delete
                         </button>
+                        <button class="close-btn" onclick="this.closest('.modal').remove()" style="background: #666;">Close</button>
                     </div>
                 </div>
             </div>
@@ -576,13 +749,18 @@ function closeAddWorkerModal() {
     document.getElementById('addWorkerForm').reset();
 }
 
-// Add worker
+// Add worker with real-time sync
 async function addWorker(event) {
     event.preventDefault();
     
-    const name = document.getElementById('workerName').value;
-    const nationalId = document.getElementById('workerNationalId').value;
-    const phone = document.getElementById('workerPhone').value;
+    const name = document.getElementById('workerName').value.trim();
+    const nationalId = document.getElementById('workerNationalId').value.trim();
+    const phone = document.getElementById('workerPhone').value.trim();
+    
+    if (!name || !nationalId || !phone) {
+        showNotification('Please fill all fields', 'error');
+        return;
+    }
     
     // Check if worker already exists
     const existingWorker = workers.find(w => 
@@ -590,7 +768,7 @@ async function addWorker(event) {
     );
     
     if (existingWorker) {
-        alert('A worker with this National ID or Phone number already exists!');
+        showNotification('Worker with this National ID or Phone already exists!', 'error');
         return;
     }
     
@@ -607,7 +785,7 @@ async function addWorker(event) {
         showNotification('Worker added successfully!');
     } catch (error) {
         console.error('Error adding worker:', error);
-        alert('Error adding worker. Please try again.');
+        showNotification('Error adding worker. Please try again.', 'error');
     }
 }
 
@@ -623,14 +801,16 @@ async function deleteWorker(workerId) {
         
         // Delete all signatures for this worker
         const workerSignatures = signatures.filter(s => s.workerId === workerId);
-        for (const signature of workerSignatures) {
-            await db.collection('signatures').doc(signature.id).delete();
-        }
+        const deletePromises = workerSignatures.map(s => 
+            db.collection('signatures').doc(s.id).delete()
+        );
         
-        showNotification('Worker deleted successfully!');
+        await Promise.all(deletePromises);
+        
+        showNotification('Worker deleted successfully!', 'warning');
     } catch (error) {
         console.error('Error deleting worker:', error);
-        alert('Error deleting worker. Please try again.');
+        showNotification('Error deleting worker. Please try again.', 'error');
     }
 }
 
@@ -641,12 +821,25 @@ function editClerkName() {
     
     if (newName && newName.trim()) {
         document.getElementById('clerkName').textContent = newName.trim();
+        // Save to localStorage for persistence
+        localStorage.setItem('clerkName', newName.trim());
+    }
+}
+
+// Load saved clerk name
+function loadClerkName() {
+    const savedName = localStorage.getItem('clerkName');
+    if (savedName) {
+        document.getElementById('clerkName').textContent = savedName;
     }
 }
 
 // Update total signatures
 function updateTotalSignatures() {
-    document.getElementById('totalSignatures').textContent = signatures.length;
+    const totalElement = document.getElementById('totalSignatures');
+    if (totalElement) {
+        totalElement.textContent = signatures.length;
+    }
 }
 
 // Update progress
@@ -659,23 +852,41 @@ function updateProgress() {
     const week2Percentage = (week2Signatures / 25) * 100;
     
     // Update progress bars
-    document.getElementById('week1Progress').style.width = `${week1Percentage}%`;
-    document.getElementById('week2Progress').style.width = `${week2Percentage}%`;
+    const week1Progress = document.getElementById('week1Progress');
+    const week2Progress = document.getElementById('week2Progress');
+    
+    if (week1Progress) {
+        week1Progress.style.width = `${week1Percentage}%`;
+        week1Progress.setAttribute('aria-valuenow', week1Percentage);
+    }
+    
+    if (week2Progress) {
+        week2Progress.style.width = `${week2Percentage}%`;
+        week2Progress.setAttribute('aria-valuenow', week2Percentage);
+    }
     
     // Update counts
-    document.getElementById('week1Count').textContent = `${week1Signatures}/25`;
-    document.getElementById('week2Count').textContent = `${week2Signatures}/25`;
+    const week1Count = document.getElementById('week1Count');
+    const week2Count = document.getElementById('week2Count');
+    
+    if (week1Count) {
+        week1Count.textContent = `${week1Signatures}/25`;
+    }
+    
+    if (week2Count) {
+        week2Count.textContent = `${week2Signatures}/25`;
+    }
 }
 
-// Export to PDF - Updated to match Word document format
+// Export to PDF without dates
 async function exportToPDF() {
-    showNotification('Generating PDF report...');
+    showNotification('Generating PDF report...', 'info');
     
     // Create a printable version of the report
     const printWindow = window.open('', '_blank');
     
     if (!printWindow) {
-        alert('Please allow pop-ups to export PDF');
+        showNotification('Please allow pop-ups to export PDF', 'error');
         return;
     }
     
@@ -688,6 +899,7 @@ async function exportToPDF() {
     <html>
     <head>
         <title>WAMUMU PI ESP - Attendance Report</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body {
                 font-family: Arial, sans-serif;
@@ -698,7 +910,7 @@ async function exportToPDF() {
             .header {
                 text-align: center;
                 margin-bottom: 20px;
-                padding: 10px;
+                padding: 15px;
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 color: white;
                 border-radius: 5px;
@@ -721,6 +933,7 @@ async function exportToPDF() {
                 margin: 20px 0 10px;
                 font-weight: bold;
                 border-left: 5px solid #667eea;
+                font-size: 16px;
             }
             .week2-title {
                 border-left-color: #ff6b6b;
@@ -752,11 +965,11 @@ async function exportToPDF() {
             }
             .signature-cell {
                 text-align: center;
-                min-width: 80px;
+                min-width: 60px;
             }
             .signature-image {
-                max-width: 80px;
-                max-height: 40px;
+                max-width: 60px;
+                max-height: 30px;
                 border: 1px solid #ccc;
                 border-radius: 3px;
             }
@@ -787,14 +1000,16 @@ async function exportToPDF() {
             .overview-section h3 {
                 margin-top: 0;
                 color: #333;
+                font-size: 14px;
             }
             .overview-section textarea {
                 width: 100%;
-                min-height: 150px;
+                min-height: 120px;
                 padding: 10px;
                 border: 1px solid #ddd;
                 border-radius: 5px;
                 font-family: inherit;
+                font-size: 12px;
             }
             .print-btn {
                 margin: 20px 0;
@@ -810,8 +1025,23 @@ async function exportToPDF() {
                 background: #45a049;
             }
             @media print {
-                .print-btn {
+                .print-btn, .no-print {
                     display: none;
+                }
+                body {
+                    margin: 0.5in;
+                }
+            }
+            @media (max-width: 768px) {
+                table {
+                    font-size: 10px;
+                }
+                td, th {
+                    padding: 4px;
+                }
+                .signature-image {
+                    max-width: 40px;
+                    max-height: 20px;
                 }
             }
         </style>
@@ -819,7 +1049,7 @@ async function exportToPDF() {
     <body>
         <div class="header">
             <h1>WAMUMU PI ESP</h1>
-            <h3>CLERK OF WORKS: ${clerkName}</h3>
+            <h3>CLERK OF WORKS: ${escapeHtml(clerkName)}</h3>
             <p>Total Signatures: ${signatures.length}</p>
         </div>
     `;
@@ -827,7 +1057,7 @@ async function exportToPDF() {
     // Add Week 1 table
     htmlContent += `
         <div class="week-section">
-            <div class="week-title">WEEK 1 (2ND FEBRUARY - 6TH FEBRUARY 2026)</div>
+            <div class="week-title">WEEK 1</div>
             <table>
                 <thead>
                     <tr>
@@ -848,9 +1078,9 @@ async function exportToPDF() {
     workers.forEach(worker => {
         htmlContent += `
             <tr>
-                <td class="worker-name">${worker.name}</td>
-                <td>${worker.nationalId}</td>
-                <td>${worker.phone}</td>
+                <td class="worker-name">${escapeHtml(worker.name)}</td>
+                <td>${escapeHtml(worker.nationalId)}</td>
+                <td>${escapeHtml(worker.phone)}</td>
         `;
         
         daysOfWeek.forEach(day => {
@@ -858,10 +1088,10 @@ async function exportToPDF() {
                 s.workerId === worker.id && s.day === day && s.week === 'week1'
             );
             
-            if (signature) {
+            if (signature && signature.data) {
                 htmlContent += `
                     <td class="signature-cell">
-                        <img src="${signature.data}" class="signature-image" alt="Signature">
+                        <img src="${signature.data}" class="signature-image" alt="Signature" loading="lazy">
                     </td>
                 `;
             } else {
@@ -883,7 +1113,7 @@ async function exportToPDF() {
     // Add Week 2 table
     htmlContent += `
         <div class="week-section">
-            <div class="week-title week2-title">WEEK 2 (9TH FEBRUARY - 13TH FEBRUARY 2026)</div>
+            <div class="week-title week2-title">WEEK 2</div>
             <table>
                 <thead>
                     <tr class="week2-header">
@@ -904,9 +1134,9 @@ async function exportToPDF() {
     workers.forEach(worker => {
         htmlContent += `
             <tr>
-                <td class="worker-name">${worker.name}</td>
-                <td>${worker.nationalId}</td>
-                <td>${worker.phone}</td>
+                <td class="worker-name">${escapeHtml(worker.name)}</td>
+                <td>${escapeHtml(worker.nationalId)}</td>
+                <td>${escapeHtml(worker.phone)}</td>
         `;
         
         daysOfWeek.forEach(day => {
@@ -914,10 +1144,10 @@ async function exportToPDF() {
                 s.workerId === worker.id && s.day === day && s.week === 'week2'
             );
             
-            if (signature) {
+            if (signature && signature.data) {
                 htmlContent += `
                     <td class="signature-cell">
-                        <img src="${signature.data}" class="signature-image" alt="Signature">
+                        <img src="${signature.data}" class="signature-image" alt="Signature" loading="lazy">
                     </td>
                 `;
             } else {
@@ -940,7 +1170,7 @@ async function exportToPDF() {
     htmlContent += `
         <div class="overview-section">
             <h3>OVERVIEW OF ACTIVITIES, ACHIEVEMENTS, ANY CHALLENGES FACED AND RECOMMENDATIONS:</h3>
-            <textarea placeholder="Enter overview, achievements, challenges, and recommendations..."></textarea>
+            <textarea placeholder="Enter overview, achievements, challenges, and recommendations..." class="overview-text"></textarea>
         </div>
         
         <div class="footer">
@@ -951,7 +1181,7 @@ async function exportToPDF() {
             <p><strong>Report Generated:</strong> ${new Date().toLocaleString()}</p>
         </div>
         
-        <div style="text-align: center; margin: 20px 0;">
+        <div class="no-print" style="text-align: center; margin: 20px 0;">
             <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
         </div>
     </body>
@@ -962,10 +1192,104 @@ async function exportToPDF() {
     printWindow.document.write(htmlContent);
     printWindow.document.close();
     
-    showNotification('PDF report generated successfully!');
+    showNotification('PDF report generated successfully!', 'success');
 }
 
-// Window resize handler
+// Toggle sound notifications
+function toggleSound() {
+    const current = localStorage.getItem('soundEnabled') === 'true';
+    localStorage.setItem('soundEnabled', (!current).toString());
+    showNotification(`Sound ${!current ? 'enabled' : 'disabled'}`, 'info');
+}
+
+// Load clerk name on startup
+loadClerkName();
+
+// Window resize handler with debounce
+let resizeTimeout;
 window.addEventListener('resize', () => {
-    resizeCanvas();
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+        resizeCanvas();
+    }, 250);
 });
+
+// Add CSS animations dynamically
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    @keyframes slideOut {
+        from {
+            transform: translateX(0);
+            opacity: 1;
+        }
+        to {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+    }
+    
+    .modal {
+        animation: fadeIn 0.3s ease;
+    }
+    
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+    
+    /* Mobile optimizations */
+    @media (max-width: 768px) {
+        .signature-preview {
+            max-width: 50px;
+            max-height: 25px;
+        }
+        
+        .delete-signature-btn {
+            width: 30px;
+            height: 30px;
+        }
+        
+        .modal-content {
+            width: 95%;
+            margin: 10px;
+        }
+        
+        .signature-pad {
+            height: 150px;
+        }
+        
+        .worker-name-cell {
+            font-size: 12px;
+        }
+    }
+    
+    /* Touch optimization */
+    .mobile-device .sign-btn,
+    .mobile-device .delete-btn,
+    .mobile-device .delete-signature-btn {
+        min-height: 44px;
+        min-width: 44px;
+    }
+    
+    .mobile-device input,
+    .mobile-device select,
+    .mobile-device textarea {
+        font-size: 16px !important;
+    }
+`;
+document.head.appendChild(style);
