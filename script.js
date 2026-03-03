@@ -38,7 +38,6 @@ let canvas = null;
 let ctx = null;
 let isDrawing = false;
 let drawingHistory = [];
-let redoStack = [];
 
 // Days of the week
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
@@ -52,22 +51,56 @@ document.addEventListener('DOMContentLoaded', () => {
     checkMobileDevice();
     setupOfflineSupport();
     loadClerkName();
+    setupEventListeners();
+});
+
+// Setup all event listeners
+function setupEventListeners() {
+    console.log('Setting up event listeners...');
     
-    // Add click event listeners to all sign buttons dynamically
+    // Sign button clicks - use event delegation
     document.addEventListener('click', function(e) {
-        if (e.target.closest('.sign-btn')) {
-            const btn = e.target.closest('.sign-btn');
-            if (!btn.classList.contains('signed')) {
-                const workerId = btn.getAttribute('data-worker-id');
-                const day = btn.getAttribute('data-day');
-                const week = btn.getAttribute('data-week');
-                if (workerId && day && week) {
-                    openSignatureModal(workerId, day, week);
-                }
+        // Check if clicked element is a sign button or inside a sign button
+        const signBtn = e.target.closest('.sign-btn');
+        if (signBtn && !signBtn.classList.contains('signed')) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const workerId = signBtn.getAttribute('data-worker-id');
+            const day = signBtn.getAttribute('data-day');
+            const week = signBtn.getAttribute('data-week');
+            
+            console.log('Sign button clicked:', { workerId, day, week });
+            
+            if (workerId && day && week) {
+                openSignatureModal(workerId, day, week);
+            } else {
+                console.error('Missing data attributes on sign button');
             }
         }
     });
-});
+    
+    // Modal close buttons
+    document.querySelectorAll('.close-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            const modal = this.closest('.modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        });
+    });
+    
+    // Close modals when clicking outside
+    window.addEventListener('click', function(e) {
+        if (e.target.classList.contains('modal')) {
+            e.target.style.display = 'none';
+            if (e.target.id === 'signatureModal') {
+                clearSignature();
+                currentSigning = { workerId: null, day: null, week: null };
+            }
+        }
+    });
+}
 
 // Check if device is mobile
 function checkMobileDevice() {
@@ -117,9 +150,6 @@ function initializeCanvas() {
         canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
         canvas.addEventListener('touchend', handleTouchEnd);
         canvas.addEventListener('touchcancel', handleTouchEnd);
-        
-        // Prevent scrolling when drawing on mobile
-        canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
     } else {
         console.error('Canvas element not found');
     }
@@ -173,15 +203,18 @@ function resizeCanvas() {
 
 // Redraw canvas from history
 function redrawCanvas() {
+    if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawingHistory.forEach(point => {
+    ctx.beginPath();
+    
+    for (let i = 1; i < drawingHistory.length; i++) {
+        const point = drawingHistory[i];
         if (point.type === 'draw') {
-            ctx.beginPath();
             ctx.moveTo(point.x1, point.y1);
             ctx.lineTo(point.x2, point.y2);
             ctx.stroke();
         }
-    });
+    }
 }
 
 // Drawing functions with history
@@ -211,17 +244,17 @@ function draw(e) {
     // Store drawing point
     if (drawingHistory.length > 0) {
         const lastPoint = drawingHistory[drawingHistory.length - 1];
+        const lastX = lastPoint.type === 'draw' ? lastPoint.x2 : lastPoint.x;
+        const lastY = lastPoint.type === 'draw' ? lastPoint.y2 : lastPoint.y;
+        
         drawingHistory.push({
             type: 'draw',
-            x1: lastPoint.type === 'draw' ? lastPoint.x2 : lastPoint.x,
-            y1: lastPoint.type === 'draw' ? lastPoint.y2 : lastPoint.y,
+            x1: lastX,
+            y1: lastY,
             x2: pos.x,
             y2: pos.y
         });
     }
-    
-    // Clear redo stack on new drawing
-    redoStack = [];
 }
 
 function stopDrawing() {
@@ -255,7 +288,6 @@ function clearSignature() {
     if (ctx) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         drawingHistory = [];
-        redoStack = [];
     }
 }
 
@@ -367,7 +399,7 @@ function showNotification(message, type = 'success') {
 // Escape HTML to prevent XSS
 function escapeHtml(unsafe) {
     if (!unsafe) return '';
-    return unsafe
+    return String(unsafe)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
@@ -520,7 +552,7 @@ function renderAttendanceCell(workerId, day, week) {
                     <div class="signature-preview-container">
                         <img src="${signature.data}" class="signature-preview" alt="Signature" 
                              onclick="showSignature('${workerId}', '${day}', '${week}')"
-                             loading="lazy">
+                             loading="lazy" style="cursor: pointer;">
                         <button class="delete-signature-btn" onclick="openDeleteSignatureModal('${signature.id}', '${workerId}', '${day}', '${week}')" 
                                 aria-label="Delete signature">
                             <i class="fas fa-trash"></i>
@@ -553,7 +585,7 @@ function renderMobileAttendance(workerId, day, week) {
                     <span class="mobile-day-name">${day}</span>
                     <img src="${signature.data}" class="signature-preview" alt="Signature" 
                          onclick="showSignature('${workerId}', '${day}', '${week}')"
-                         loading="lazy">
+                         loading="lazy" style="cursor: pointer;">
                 </div>
                 <div class="mobile-signature-actions">
                     <button class="delete-signature-btn" onclick="openDeleteSignatureModal('${signature.id}', '${workerId}', '${day}', '${week}')" 
@@ -647,7 +679,6 @@ async function submitSignature() {
         week: currentSigning.week,
         data: signatureData,
         timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-        deviceInfo: navigator.userAgent,
         lastModified: new Date().toISOString()
     };
     
@@ -1227,6 +1258,151 @@ window.addEventListener('resize', () => {
         resizeCanvas();
     }, 250);
 });
+
+// Add CSS animations dynamically
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    @keyframes slideOut {
+        from {
+            transform: translateX(0);
+            opacity: 1;
+        }
+        to {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+    }
+    
+    .modal {
+        animation: fadeIn 0.3s ease;
+    }
+    
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+    
+    /* Mobile optimizations */
+    @media (max-width: 768px) {
+        .signature-preview {
+            max-width: 50px;
+            max-height: 25px;
+        }
+        
+        .delete-signature-btn {
+            width: 30px;
+            height: 30px;
+        }
+        
+        .modal-content {
+            width: 95%;
+            margin: 10px;
+        }
+        
+        .signature-pad {
+            height: 150px;
+        }
+        
+        .worker-name-cell {
+            font-size: 12px;
+        }
+        
+        .sign-btn {
+            padding: 8px 12px;
+            font-size: 12px;
+        }
+    }
+    
+    /* Touch optimization */
+    .mobile-device .sign-btn,
+    .mobile-device .delete-btn,
+    .mobile-device .delete-signature-btn {
+        min-height: 44px;
+        min-width: 44px;
+    }
+    
+    .mobile-device input,
+    .mobile-device select,
+    .mobile-device textarea {
+        font-size: 16px !important;
+    }
+    
+    /* Button styles */
+    .sign-btn {
+        background: linear-gradient(135deg, #4CAF50, #45a049);
+        color: white;
+        border: none;
+        padding: 8px 15px;
+        border-radius: 20px;
+        font-size: 0.9em;
+        cursor: pointer;
+        transition: all 0.3s;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+    
+    .sign-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+    }
+    
+    .sign-btn.signed {
+        background: linear-gradient(135deg, #2196F3, #1976D2);
+    }
+    
+    .delete-btn {
+        background: linear-gradient(135deg, #f44336, #d32f2f);
+        color: white;
+        border: none;
+        padding: 8px 12px;
+        border-radius: 20px;
+        font-size: 0.9em;
+        cursor: pointer;
+        transition: all 0.3s;
+    }
+    
+    .delete-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+    }
+    
+    .delete-signature-btn {
+        background: linear-gradient(135deg, #f44336, #d32f2f);
+        color: white;
+        border: none;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        cursor: pointer;
+        transition: all 0.3s;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+    }
+    
+    .delete-signature-btn:hover {
+        transform: scale(1.1);
+        box-shadow: 0 3px 10px rgba(244, 67, 54, 0.4);
+    }
+`;
+document.head.appendChild(style);
 
 // Make functions globally available
 window.openSignatureModal = openSignatureModal;
